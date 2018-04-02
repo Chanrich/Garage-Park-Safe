@@ -145,11 +145,15 @@ void ble_setup(){
   Serial.println(F("GATT service added"));
 
   // Register a characteristic with a 16-bit UUID (String: 0x2A3D)
-  // Property is read only
-  if (!ble.atcommandIntReply(F("AT+GATTADDCHAR=UUID=0x2A3D,PROPERTIES=0x02,MIN_LEN=1,VALUE=0,DESCRIPTION=DISTANCE MEASUREMENT"), &c_ID)){
+  // Property is notify
+  if (!ble.atcommandIntReply(F("AT+GATTADDCHAR=UUID=0x2A3D,PROPERTIES=0x10,MIN_LEN=1,VALUE=0,DESCRIPTION=DISTANCE MEASUREMENT"), &c_ID)){
     error(F("Failed to register characteristic 1"));
   }
   Serial.println(F("GATT characteristic added"));
+
+  // Reset system after changing GATT profile
+  ble.atcommand(F("ATZ"));
+  delay(3000);
   
   // Start advertising if it isn't already
   ble.atcommand(F("AT+GAPSTARTADV"));
