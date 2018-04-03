@@ -2,7 +2,7 @@
 #include <SPI.h>
 
 #define Vcc 5
-#define UPDATE_COMMAND_CHARSIZE 20
+#define UPDATE_COMMAND_CHARSIZE 30
 #define FACTORYRESET_ENABLE      0
 
 #define BUFSIZE                        160   // Size of the read buffer for incoming data
@@ -23,7 +23,7 @@ enum state_name {
 
 volatile int Aread;
 volatile float Aread_V;
-volatile uint32_t distance;
+volatile float distance;
 volatile unsigned char state;
 
 uint32_t s_ID;
@@ -52,6 +52,8 @@ ISR(ADC_vect){
   if (distance <= 10){
     distance = 0;
   }
+  Serial.println(distance);
+
   // Move to update state
   state = update_state;
 }
@@ -81,14 +83,14 @@ void loop() {
       // Do nothing
       break;
       
-    case connect_state:
-      Serial.println(F("Waiting for bluetooth device to connect..."));
-      
+    case connect_state:      
       // Change state only when ble is connected
       if (ble.isConnected()){
         Serial.println(F("Bluetooth device connected."));
         state = adc_state;
       }
+
+      // Check for connection after a small delay
       delay(2000);
       break;
       
@@ -100,8 +102,17 @@ void loop() {
       break;
       
     case update_state:
+    	// If device is no longer connected, go back to connect_state without updating BLE
+    	if (!ble.isConnected()){
+    		state = connect_state;
+    		return;
+    	}
+
       // Send update to BLE device and go back to sampling ADC
       setCharacteristicToValue(c_ID, distance);
+      // Pause briefly
+      delay(1000);
+
       state = adc_state;
       break;
 
@@ -146,7 +157,7 @@ void ble_setup(){
 
   // Register a characteristic with a 16-bit UUID (String: 0x2A3D)
   // Property is notify
-  if (!ble.atcommandIntReply(F("AT+GATTADDCHAR=UUID=0x2A3D,PROPERTIES=0x10,MIN_LEN=1,VALUE=0,DESCRIPTION=DISTANCE MEASUREMENT"), &c_ID)){
+  if (!ble.atcommandIntReply(F("AT+GATTADDCHAR=UUID=0x2A3D,PROPERTIES=0x10,MIN_LEN=1,MAX_LEN=4,VALUE=0,DESCRIPTION=DISTANCE MEASUREMENT"), &c_ID)){
     error(F("Failed to register characteristic 1"));
   }
   Serial.println(F("GATT characteristic added"));
@@ -161,19 +172,28 @@ void ble_setup(){
 }
 
 // Send a new distance value to BLE and return 1 for OK or 0 for ERROR
-void setCharacteristicToValue(uint32_t ID, uint32_t val){
+void setCharacteristicToValue(uint32_t ID, float val){
+	Serial.println("======== Update Sensor Value =========");
+	uint32_t dnum;
+	dnum = int(val);
+	// Hold distance value
+	char d[5];
+
       // Clear update command string
   memset(updateCommand, 0, UPDATE_COMMAND_CHARSIZE);
 
     // Fill update command with characteristic ID and distance value
-  sprintf(updateCommand, "AT+GATTCHAR=%u,%u", ID, val);
+  sprintf(updateCommand, "AT+GATTCHAR=%u,", ID);
+  sprintf(d, "%u", dnum);
+  Serial.println("d:");
+  Serial.println(d);
+  // Form update char string
+  strcat(updateCommand, d);
 
   if (!ble.atcommand(updateCommand)){
-    error(F("Failed to send new distance data"));
+    //error(F("Failed to send new distance data"));
+    Serial.println(F("Failed to send new distance data"));
   }
-  
-  Serial.print("Executed command:\t");
-  Serial.println(updateCommand);
 }
 
 // Configure ADC to target ADC0 and enable ADC interrupt. Auto-trigger is disabled
