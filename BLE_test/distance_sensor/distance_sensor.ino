@@ -4,6 +4,7 @@
 #define Vcc 5
 #define UPDATE_COMMAND_CHARSIZE 30
 #define FACTORYRESET_ENABLE      0
+#define AVERAGE_OF_TRIES 5
 
 #define BUFSIZE                        160   // Size of the read buffer for incoming data
 #define VERBOSE_MODE                   true  // If set to 'true' enables debug output
@@ -13,7 +14,7 @@
 #define BLUEFRUIT_SPI_RST              8    // Optional but recommended, set to -1 if unused
 
 
-
+// All possible states
 enum state_name {
   idle_state = 0,
   connect_state,
@@ -21,22 +22,21 @@ enum state_name {
   update_state
 };
 
-volatile int Aread;
-volatile float Aread_V;
-volatile float distance;
-volatile unsigned char state;
+// Hold value for distance reading from radar
+static volatile float distance;
 
-uint32_t s_ID;
-uint32_t c_ID;
-// string to store update command
-char updateCommand[UPDATE_COMMAND_CHARSIZE];
+// State machine
+static volatile unsigned char state;
 
+// Reserved place for service ID and characteristic ID
+static uint32_t s_ID;
+static uint32_t c_ID;
 
 // Adafruit provided library to interact with lower level SPI and messging between Bluefruit.
 // 3 parameters: CS, IRQ, RST(optional)
 Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
 
-// A small helper
+// Print to serial and stop program
 void error(const __FlashStringHelper*err) {
   Serial.println(err);
   while (1);
@@ -44,15 +44,31 @@ void error(const __FlashStringHelper*err) {
 
 // Interrupt for ADC conversion completion
 ISR(ADC_vect){
+	// Increment sum counter
+	static volatile char sum_counter = 0;
+	static volatile int distance_sum_before_processing = 0;
+	static volatile float Aread_V = 0;
+	sum_counter++;
+
   // Read low register first and then 2 bits from high register
-  Aread = ADCL | (ADCH << 8);
-  Aread_V = float(Aread * Vcc) / 1024; // Calculate real voltage level
-  distance = 26.927 * pow(Aread_V, -1.197); // Calculate distance from voltage, formula extracted from data points using excel treadline
-  // Remove unstable values
-  if (distance <= 10){
-    distance = 0;
+  distance_sum_before_processing += ADCL | (ADCH << 8);
+
+  // Calculate average
+  if (sum_counter == AVERAGE_OF_TRIES){
+  	// Find the average
+	  Aread_V = (float(distance_sum_before_processing/(float)AVERAGE_OF_TRIES) * Vcc) / 1024; // Calculate real voltage level
+	  distance = 26.927 * pow(Aread_V, -1.197); // Calculate distance from voltage, formula extracted from data points using excel treadline
+
+	  // Remove unstable values
+	  if (distance <= 10 || distance > 90){
+	    distance = 0;
+	  }
+
+	  // Reset counter
+	  distance_sum_before_processing = 0;
+	  Aread_V = 0;
+  	sum_counter = 0;
   }
-  Serial.println(distance);
 
   // Move to update state
   state = update_state;
@@ -70,7 +86,7 @@ void setup() {
   // configure ADC register
   adc_setup();
 
-    // Initialize distance val
+    // Initialize
   distance = 0;
   state = connect_state;
   
@@ -87,6 +103,11 @@ void loop() {
       // Change state only when ble is connected
       if (ble.isConnected()){
         Serial.println(F("Bluetooth device connected."));
+
+        // Turn off verbose mode
+        ble.verbose(false);
+				Serial.println(F("Verbose mode - OFF"));
+
         state = adc_state;
       }
 
@@ -95,7 +116,8 @@ void loop() {
       break;
       
     case adc_state:
-      Serial.println(F("Start sampling ADC value... and go back to idle"));
+      //Serial.println(F("Start sampling ADC value... and go back to idle"));
+
       // After enablig adc, swithc to idle state to wait for ADC interrupt
       adc_start();
       state = idle_state;
@@ -111,7 +133,7 @@ void loop() {
       // Send update to BLE device and go back to sampling ADC
       setCharacteristicToValue(c_ID, distance);
       // Pause briefly
-      delay(1000);
+      delay(100);
 
       state = adc_state;
       break;
@@ -157,7 +179,7 @@ void ble_setup(){
 
   // Register a characteristic with a 16-bit UUID (String: 0x2A3D)
   // Property is notify
-  if (!ble.atcommandIntReply(F("AT+GATTADDCHAR=UUID=0x2A3D,PROPERTIES=0x10,MIN_LEN=1,MAX_LEN=4,VALUE=0,DESCRIPTION=DISTANCE MEASUREMENT"), &c_ID)){
+  if (!ble.atcommandIntReply(F("AT+GATTADDCHAR=UUID=0x2A3D,PROPERTIES=0x10,MIN_LEN=1,MAX_LEN=2,VALUE=0,DESCRIPTION=DISTANCE MEASUREMENT"), &c_ID)){
     error(F("Failed to register characteristic 1"));
   }
   Serial.println(F("GATT characteristic added"));
@@ -173,20 +195,23 @@ void ble_setup(){
 
 // Send a new distance value to BLE and return 1 for OK or 0 for ERROR
 void setCharacteristicToValue(uint32_t ID, float val){
-	Serial.println("======== Update Sensor Value =========");
+	// Serial.println("======== Update Sensor Value =========");
 	uint32_t dnum;
-	dnum = int(val);
 	// Hold distance value
 	char d[5];
+	// string to store update command
+	char updateCommand[UPDATE_COMMAND_CHARSIZE];
 
+	// Remove decimal points
+	dnum = int(val);
       // Clear update command string
   memset(updateCommand, 0, UPDATE_COMMAND_CHARSIZE);
 
-    // Fill update command with characteristic ID and distance value
+  // Fill update command with characteristic ID and distance value
   sprintf(updateCommand, "AT+GATTCHAR=%u,", ID);
   sprintf(d, "%u", dnum);
-  Serial.println("d:");
-  Serial.println(d);
+
+ 
   // Form update char string
   strcat(updateCommand, d);
 
